@@ -1,25 +1,19 @@
 <?php
 /**
- * Plugin Name.
+ * Wp Favs
  *
  * @package   Wpfavs_Admin
- * @author    Your Name <email@example.com>
+ * @author    Damian Logghe <info@timersys.com>
  * @license   GPL-2.0+
- * @link      http://example.com
- * @copyright 2014 Your Name or Company Name
+ * @link      http://wpfavs.com
+ * @copyright 2014 Damian Logghe
  */
 
 /**
- * Plugin class. This class should ideally be used to work with the
- * administrative side of the WordPress site.
- *
- * If you're interested in introducing public-facing
- * functionality, then refer to `class-plugin-name.php`
- *
- * @TODO: Rename this class to a proper name for your plugin.
+ * Main Class of Wp Favs Plugin
  *
  * @package Wpfavs_Admin
- * @author  Your Name <email@example.com>
+ * @author Damian Logghe <info@timersys.com>
  */
 class Wpfavs_Admin {
 
@@ -30,7 +24,7 @@ class Wpfavs_Admin {
 	 *
 	 * @var     string
 	 */
-	const VERSION = '1.0.0';
+	const VERSION = '1.0.1';
 	
 	/**
 	 * API Url to do the remote calls
@@ -96,7 +90,8 @@ class Wpfavs_Admin {
 	 */
 	private function __construct() {
 
-
+		// Load plugin text domain
+		add_action( 'init', array( $this, 'load_plugin_textdomain' ) );
 
 		// Load admin style sheet and JavaScript.
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin_styles' ) );
@@ -112,6 +107,7 @@ class Wpfavs_Admin {
 		//Ajax actions
 		add_action( 'wp_ajax_wpfav_apikey', array( $this, 'wpfav_apikey_cb' ) );
 		add_action( 'wp_ajax_wpfav_quickkey', array( $this, 'wpfav_quickkey_cb' ) );
+		add_action( 'wp_ajax_wpfav_wp_username', array( $this, 'get_wp_favorite_plugins' ) );
 
 		//load options
 		$this->load_wpfav_options();
@@ -144,12 +140,33 @@ class Wpfavs_Admin {
 		return self::$instance;
 	}
 
+	/**
+	 * Load the plugin text domain for translation.
+	 *
+	 * @since    1.0.1
+	 */
+	public function load_plugin_textdomain() {
+
+		$domain = $this->plugin_slug;
+		$locale = apply_filters( 'plugin_locale', get_locale(), $domain );
+
+		load_textdomain( $domain, trailingslashit( WP_LANG_DIR ) . $domain . '/' . $domain . '-' . $locale . '.mo' );
+		load_plugin_textdomain( $domain, FALSE, basename( plugin_dir_path( dirname( __FILE__ ) ) ) . '/languages/' );
+
+	}
+
+	/**
+	 * Load options if exist to prefill fields
+	 * @since 1.0.1
+	 * @return void
+	 */
 	private function load_wpfav_options() {
 
 		if( $this->screen_check() ) {
 
 			$this->api_key 			= get_option( $this->plugin_slug . 'wpfav_apikey' );
 			$this->quick_key 		= get_option( $this->plugin_slug . 'wpfav_quickkey' );
+			$this->wp_user 			= get_option( $this->plugin_slug . 'wpfav_wpuser' );
 			$this->api_key_response = unserialize( get_transient( $this->plugin_slug . 'wpfav_apikey_response') );
 			//we update installed plugins
 			if( !empty( $this->api_key_response ) )
@@ -160,10 +177,6 @@ class Wpfavs_Admin {
 
 	/**
 	 * Register and enqueue admin-specific style sheet.
-	 *
-	 * @TODO:
-	 *
-	 * - Rename "Wpfavs" to the name your plugin
 	 *
 	 * @since     1.0.0
 	 *
@@ -180,10 +193,6 @@ class Wpfavs_Admin {
 
 	/**
 	 * Register and enqueue admin-specific JavaScript.
-	 *
-	 * @TODO:
-	 *
-	 * - Rename "Wpfavs" to the name your plugin
 	 *
 	 * @since     1.0.0
 	 *
@@ -291,7 +300,7 @@ class Wpfavs_Admin {
 		}
 
 		// Decode response
-		$response = json_decode( wp_remote_retrieve_body( $response ), TRUE );
+		$response = apply_filters( 'wpfav_api_response', json_decode( wp_remote_retrieve_body( $response ), TRUE ) );
 
 		//check for api errors
 		if( isset( $response['error'] ) ) {
@@ -301,6 +310,7 @@ class Wpfavs_Admin {
 
 		// If we made it to here let's save it and load our table class
 		update_option( $this->plugin_slug . 'wpfav_apikey', $wpfav_apikey );
+
 		set_transient( $this->plugin_slug . 'wpfav_apikey_response', serialize($response), 30 * DAY_IN_SECONDS );
 
 		self::print_table( $response );
@@ -335,22 +345,91 @@ class Wpfavs_Admin {
 
 		// Make sure there are no errors
 		if ( is_wp_error( $response ) ) {
-			$error_string = $result->get_error_message();
+			$error_string = $response->get_error_message();
   			echo self::message_box( $error_string );
   			die();
 		}
 
 		// Decode response
-		$response = json_decode( wp_remote_retrieve_body( $response ), TRUE );
+		$response = apply_filters( 'wpfav_quickkey_response', json_decode( wp_remote_retrieve_body( $response ), TRUE ) );
 
 		//check for api errors
 		if( isset( $response['error'] ) ) {
   			echo self::message_box( $response['error'] );
   			die();
-		} 
+		}
 
 		// If we made it to here let's save it and load our table class
 		update_option( $this->plugin_slug . 'wpfav_quickkey', $wpfav_quickkey );
+
+		self::print_table( $response );
+
+		die();
+	}
+
+	
+	/**
+	 * Ajax function that gets the wordpress.org username and
+	 * do the remote call to retrieve the favorite plugins from wordpress.org
+	 *
+	 * @since    1.0.1
+	 */
+	public function get_wp_favorite_plugins() {
+
+		$nonce = $_POST['nonce'];
+        if ( ! wp_verify_nonce( $nonce, 'wpfav-nonce' ) )
+        	die ( 'Wrong nonce!');
+
+        // wp username
+        $wpfav_wp_username = $_POST['api_key'];
+
+        // Include plugins api
+        include_once( ABSPATH . 'wp-admin/includes/plugin-install.php' );
+		$response = plugins_api( 'query_plugins', array( 'user' => $wpfav_wp_username ) );
+		
+		// Make sure there are no errors
+		if ( is_wp_error( $response ) ) {
+			$error_string = $response->get_error_message();
+  			echo self::message_box( $error_string );
+  			die();
+		}
+
+		// Check that we have plugins on it
+		if ( empty( $response->plugins ) ) {
+			$error_string = __( "No favorites plugins found on Wordpress.org for the given username", $this->plugin_slug );
+  			echo self::message_box( $error_string );
+  			die();
+		}
+		// prepare plugins array
+		foreach( $response->plugins as $plugin ) {
+			
+			$temp_a = array(
+				'ID' 			=> $i++,
+				'title' 		=> $plugin->name,
+		        'slug' 			=> $plugin->slug,
+		        'link' 			=> 'http://wpfavs.com/plugin/' . $plugin->slug .'/',
+		        'dlink' 		=> 'https://downloads.wordpress.org/plugin/' . $plugin->slug . '.' . $plugin->version . '.zip',
+		        'last_updated' 	=> 'unknown',
+		        'version' 		=> $plugin->version
+				);
+			$plugins[] = $temp_a;
+			
+		}
+
+		$response = apply_filters( 'wpfav_wp_user_response',
+			array(
+				7331 => array(
+							'title' 		=> __( 'Wordpress.org Favorites', $this->plugin_slug ),
+							'id' 			=> 7331,
+							'description' 	=> __( sprintf('%s\'s favorites plugins in Wordpress.org', $wpfav_wp_username ), $this->plugin_slug ),
+							'link' 			=> 'https://profiles.wordpress.org/' . $wpfav_wp_username,
+							'plugins' 		=> $plugins,
+						) 
+			) 
+		);
+
+		// If we made it to here let's save the user and load our table class
+		update_option( $this->plugin_slug . 'wpfav_wpuser', $wpfav_wp_username );
 
 		self::print_table( $response );
 
@@ -464,6 +543,7 @@ class Wpfavs_Admin {
         return '';
 
     }
+
     /**	
      * We check that we are on the options page on our plugin
      * @return boolean True if we are in our plugin's page
